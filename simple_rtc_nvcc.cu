@@ -42,6 +42,17 @@ std::string get_function_arguments() {
     return s;
 }
 
+std::string get_call_args(std::size_t num_args) {
+    std::string call_args;
+    for (int i = 0; i < num_args; i++) {
+        if (i > 0) {
+            call_args = call_args + ", ";
+        }
+        call_args = call_args + (char)(((int)'a') + i);
+    }
+    return call_args;
+}
+
 struct ModulePointer {
     void* module_;
     std::string libname_;
@@ -116,7 +127,81 @@ bool file_exists (const std::string& fname) {
 }
 
 struct Compiler {
+    std::string headerfile_;
+    std::string outpath_;
     std::unordered_map<std::tuple<std::size_t, std::size_t>, Module> modules;
+
+    Compiler(const std::string& headerfile, const std::string& outpath)
+            : headerfile_(headerfile), outpath_(outpath) {
+        copy_header();
+    }
+
+    void copy_header() const {
+        system(
+            make_message("cp ", headerfile_, " ", outpath_).c_str()
+        );
+    }
+
+    template<typename... Args>
+    void write_code(const std::string& fname,
+                    const std::string& code,
+                    const std::string& funcname) {
+        std::ofstream out(fname.c_str(), std::ofstream::out);
+        if (out.bad()) {
+            std::cout << "cannot open " << fname << std::endl;
+            exit(EXIT_FAILURE);
+        }
+        // add header to code (and extern c to avoid name mangling)
+        std::string newcode = make_message(
+            "#include \"", headerfile_, "\"\n",
+            code, "\n", "extern \"C\" void maker (",
+            get_function_arguments<Args...>(),
+            "){\n", funcname, '(', get_call_args(sizeof...(Args)), ");}"
+        );
+        out << newcode;
+        out.flush();
+        out.close();
+    }
+
+    bool compile_code(const std::string& source,
+                      const std::string& dest,
+                      const std::string& logfile) {
+        std::string cmd = "nvcc -std=c++11 " + source + " -o " + dest
+                          + " -O2 -shared &> " + logfile;
+        int ret = system(cmd.c_str());
+        return WEXITSTATUS(ret) == EXIT_SUCCESS;
+    }
+
+    template<typename... Args>
+    void create_module(const std::string& save_name,
+                       const std::string& code,
+                       const std::string& funcname,
+                       bool force_recompilation,
+                       const std::tuple<std::size_t, std::size_t>& module_key) {
+        std::string libfile = save_name + ".so";
+        bool module_never_compiled = !file_exists(libfile);
+        if (force_recompilation || module_never_compiled) {
+            std::cout << "Compiling..." << std::endl;
+            std::string cppfile = save_name + ".cu";
+            std::string logfile = save_name + ".log";
+
+            write_code<Args...>(cppfile, code, funcname);
+            bool success = compile_code(
+                cppfile,
+                libfile,
+                logfile
+            );
+
+            if (!success) {
+                std::cout << "Compilation failed, see " << logfile << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            std::cout << "Module previously compiled: reusing." << std::endl;
+        }
+        Module module(libfile);
+        modules[module_key] = module;
+    }
 
     // compile code, instantiate class and return pointer to base class
     // https://www.linuxjournal.com/article/3687
@@ -137,63 +222,14 @@ struct Compiler {
         bool module_never_loaded = modules.find(module_key) == modules.end();
 
         if (force_recompilation || module_never_loaded) {
-            // temporary cpp/library output files
-            std::string outpath = "/tmp";
-            std::string base_name = make_message(outpath, "/", code_hash, arg_hash);
-            std::string libfile = base_name + ".so";
-
-            bool module_never_compiled = !file_exists(libfile);
-
-            if (force_recompilation || module_never_compiled) {
-                std::cout << "compiling..." << std::endl;
-                std::string headerfile = "array.h";
-                std::string cppfile = base_name + ".cu";
-                std::string logfile = base_name + ".log";
-
-                std::ofstream out(cppfile.c_str(), std::ofstream::out);
-                if (out.bad()) {
-                    std::cout << "cannot open " << cppfile << std::endl;
-                    exit(EXIT_FAILURE);
-                }
-                // copy required header file to outpath
-                std::string cp_cmd="cp " + headerfile + " " + outpath;
-                system(cp_cmd.c_str());
-
-                std::string call_args;
-                for (int i = 0; i < sizeof...(Args); i++) {
-                    if (i > 0) {
-                        call_args = call_args + ", ";
-                    }
-                    call_args = call_args + (char)(((int)'a') + i);
-                }
-                // add necessary header to the code
-                std::string newcode = "#include \"" + headerfile + "\"\n\n"
-                                      + code + "\n\n"
-                                      // here we put extern c to void name mangling:
-                                      "extern \"C\" void maker (" +
-                                      get_function_arguments<Args...>() +
-                                      ") {\n"
-                                      + funcname + "(" + call_args + ");\n"
-                                      "}\n";
-                // output code to file
-                out << newcode;
-                out.flush();
-                out.close();
-                // compile the code
-                std::string cmd = "nvcc -std=c++11 " + cppfile + " -o " + libfile
-                                  + " -O2 -shared &> " + logfile;
-                int ret = system(cmd.c_str());
-                if (WEXITSTATUS(ret) != EXIT_SUCCESS) {
-                    std::cout << "compilation failed, see " << logfile << std::endl;
-                    exit(EXIT_FAILURE);
-                }
-            } else {
-                std::cout << "module previously compiled. Reusing" << std::endl;
-            }
-            Module module(libfile);
-            modules[module_key] = module;
+            create_module<Args...>(
+                make_message(outpath_, "/", code_hash, arg_hash),
+                code, funcname,
+                force_recompilation,
+                module_key
+            );
         } else {
-            std::cout << "module previously loaded. Reusing" << std::endl;
+            std::cout << "Module previously loaded: reusing." << std::endl;
         }
         std::function<void(Args...)> method = modules[module_key].get_symbol<void(*)(Args...)>("maker");
         return method;
@@ -258,7 +294,7 @@ int main(int argc, char** argv) {
         operator_name = argv[1];
     }
 
-    Compiler compiler;
+    Compiler compiler("array.h", "/tmp");
 
     // run functor defined by user at runtime:
     auto func = get_func_with_operator(compiler, operator_name);

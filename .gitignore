@@ -1,0 +1,6 @@
+simple_rtc
+simple_rtc_nvcc
+runtime_compiler
+.DS_Store
+*.so
+*.o
