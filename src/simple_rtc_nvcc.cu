@@ -1,5 +1,6 @@
 #include "config.h"
 #include "array.h"
+#include "timer.h"
 
 #include <cstdlib>      // EXIT_FAILURE, etc
 #include <string>
@@ -158,7 +159,7 @@ struct Compiler {
     std::string header_file_includes() const {
         std::stringstream ss;
         for (auto& header : headerfiles_) {
-            ss << "#include \"", header.name_, "\"\n";
+            ss << "#include \"" << header.name_ << "\"\n";
         }
         return ss.str();
     }
@@ -187,6 +188,7 @@ struct Compiler {
     bool compile_code(const std::string& source,
                       const std::string& dest,
                       const std::string& logfile) {
+        utils::Timer t1("compile " + source);
         std::string cmd = "nvcc -std=c++11 " + source + " -o " + dest
                           + " -O2 -shared &> " + logfile;
         int ret = system(cmd.c_str());
@@ -277,7 +279,7 @@ std::function<void(ArrayGather<float>, Array<float>)> get_func_with_operator(
         "    );\n"
         "};"
     );
-    return compiler.compile<ArrayGather<float>, Array<float>>(code, "rtc_func", false);
+    return compiler.compile<ArrayGather<float>, Array<float>>(code, "rtc_func", true);
 }
 
 int main(int argc, char** argv) {
@@ -333,6 +335,8 @@ int main(int argc, char** argv) {
     // run functor defined by user at again:
     func(source[indices_gpu], updates);
     source.print();
+
+    utils::Timer::report();
 
     return EXIT_SUCCESS;
 }
