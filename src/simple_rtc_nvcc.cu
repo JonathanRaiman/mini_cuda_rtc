@@ -1,6 +1,10 @@
-#include "config.h"
+#include "config.h" // contains information about header location
 #include "array.h"
+#include "array-impl.h"
+#include "array_gather.h"
+#include "array_gather-impl.h"
 #include "timer.h"
+#include "make_message.h"
 
 #include <cstdlib>      // EXIT_FAILURE, etc
 #include <string>
@@ -91,6 +95,7 @@ struct Module {
 
     template<typename T>
     T get_symbol(const std::string& name) {
+        Timer t1("get_symbol");
         void* symbol = dlsym(module(), name.c_str());
         const char* dlsym_error = dlerror();
         if (dlsym_error != NULL) {
@@ -141,10 +146,11 @@ struct Headerfile {
 struct Compiler {
     std::vector<Headerfile> headerfiles_;
     std::string outpath_;
+    std::string include_dir_;
     std::unordered_map<std::tuple<std::size_t, std::size_t>, Module> modules;
 
-    Compiler(const std::vector<Headerfile>& headerfiles, const std::string& outpath)
-            : headerfiles_(headerfiles), outpath_(outpath) {
+    Compiler(const std::vector<Headerfile>& headerfiles, const std::string& include_dir, const std::string& outpath)
+            : headerfiles_(headerfiles), include_dir_(include_dir), outpath_(outpath) {
         copy_headers();
     }
 
@@ -168,6 +174,8 @@ struct Compiler {
     void write_code(const std::string& fname,
                     const std::string& code,
                     const std::string& funcname) {
+        Timer t1("write_code " + fname);
+
         std::ofstream out(fname.c_str(), std::ofstream::out);
         if (out.bad()) {
             std::cout << "cannot open " << fname << std::endl;
@@ -188,9 +196,16 @@ struct Compiler {
     bool compile_code(const std::string& source,
                       const std::string& dest,
                       const std::string& logfile) {
-        utils::Timer t1("compile " + source);
-        std::string cmd = "nvcc -std=c++11 " + source + " -o " + dest
-                          + " -O2 -shared &> " + logfile;
+        Timer t1("nvcc " + source);
+        std::string cmd = make_message(
+            "nvcc -std=c++11 ", source,
+            " -o ", dest,
+            " -I", include_dir_,
+            // dynamic lookup: -undefined dynamic_lookup on clang
+            // and -Wl,--unresolved-symbols=ignore-in-object-files for gcc
+            " --compiler-options=\"-undefined dynamic_lookup\" "
+            " -O2 -shared &> ",logfile
+        );
         int ret = system(cmd.c_str());
         return WEXITSTATUS(ret) == EXIT_SUCCESS;
     }
@@ -201,6 +216,8 @@ struct Compiler {
                        const std::string& funcname,
                        bool force_recompilation,
                        const std::tuple<std::size_t, std::size_t>& module_key) {
+        Timer t1("nvcc+load " + save_name);
+
         std::string libfile = save_name + ".so";
         bool module_never_compiled = !file_exists(libfile);
         if (force_recompilation || module_never_compiled) {
@@ -237,10 +254,14 @@ struct Compiler {
             std::string funcname,
             bool force_recompilation) {
 
+        Timer code_hash_timer("code_hash_timer");
+
         std::size_t code_hash = std::hash<std::string>()(code);
         std::string func_args = get_function_arguments<Args...>();
         std::size_t arg_hash  = std::hash<std::string>()(func_args);
         std::tuple<std::size_t, std::size_t> module_key(code_hash, arg_hash);
+
+        code_hash_timer.stop();
 
         bool module_never_loaded = modules.find(module_key) == modules.end();
 
@@ -279,8 +300,11 @@ std::function<void(ArrayGather<float>, Array<float>)> get_func_with_operator(
         "    );\n"
         "};"
     );
-    return compiler.compile<ArrayGather<float>, Array<float>>(code, "rtc_func", true);
+    return compiler.compile<ArrayGather<float>, Array<float>>(code, "rtc_func", false);
 }
+
+template class Array<float>;
+template class Array<int>;
 
 int main(int argc, char** argv) {
     int dim = 5;
@@ -318,7 +342,10 @@ int main(int argc, char** argv) {
     }
 
     Compiler compiler(
-        {Headerfile(STR(PROJECT_DIR) "/src/array.h", "array.h")},
+        {Headerfile(STR(PROJECT_DIR) "/src/array.h", "array.h"),
+         Headerfile(STR(PROJECT_DIR) "/src/array_gather.h", "array_gather.h"),
+         Headerfile(STR(PROJECT_DIR) "/src/kernels.h", "kernels.h")},
+        STR(PROJECT_DIR) "/src",
         "/tmp"
     );
 
@@ -336,7 +363,7 @@ int main(int argc, char** argv) {
     func(source[indices_gpu], updates);
     source.print();
 
-    utils::Timer::report();
+    Timer::report();
 
     return EXIT_SUCCESS;
 }
