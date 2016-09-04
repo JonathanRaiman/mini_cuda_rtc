@@ -1,3 +1,4 @@
+#include "config.h"
 #include "array.h"
 
 #include <cstdlib>      // EXIT_FAILURE, etc
@@ -9,6 +10,9 @@
 #include <sys/stat.h>
 #include <unordered_map>
 #include <tuple>
+
+#define STR(x) __THIS_IS_VERY_ABNOXIOUS(x)
+#define __THIS_IS_VERY_ABNOXIOUS(tok) #tok
 
 template<typename Cls>
 std::string get_class_name() {
@@ -126,20 +130,37 @@ bool file_exists (const std::string& fname) {
     return (stat (fname.c_str(), &buffer) == 0);
 }
 
+struct Headerfile {
+    std::string path_;
+    std::string name_;
+    Headerfile(const std::string& path, const std::string& name) :
+        path_(path), name_(name) {}
+};
+
 struct Compiler {
-    std::string headerfile_;
+    std::vector<Headerfile> headerfiles_;
     std::string outpath_;
     std::unordered_map<std::tuple<std::size_t, std::size_t>, Module> modules;
 
-    Compiler(const std::string& headerfile, const std::string& outpath)
-            : headerfile_(headerfile), outpath_(outpath) {
-        copy_header();
+    Compiler(const std::vector<Headerfile>& headerfiles, const std::string& outpath)
+            : headerfiles_(headerfiles), outpath_(outpath) {
+        copy_headers();
     }
 
-    void copy_header() const {
-        system(
-            make_message("cp ", headerfile_, " ", outpath_).c_str()
-        );
+    void copy_headers() const {
+        for (auto& header : headerfiles_) {
+            system(
+                make_message("cp ", header.path_, " ", outpath_).c_str()
+            );
+        }
+    }
+
+    std::string header_file_includes() const {
+        std::stringstream ss;
+        for (auto& header : headerfiles_) {
+            ss << "#include \"", header.name_, "\"\n";
+        }
+        return ss.str();
     }
 
     template<typename... Args>
@@ -153,7 +174,7 @@ struct Compiler {
         }
         // add header to code (and extern c to avoid name mangling)
         std::string newcode = make_message(
-            "#include \"", headerfile_, "\"\n",
+            header_file_includes(),
             code, "\n", "extern \"C\" void maker (",
             get_function_arguments<Args...>(),
             "){\n", funcname, '(', get_call_args(sizeof...(Args)), ");}"
@@ -294,7 +315,10 @@ int main(int argc, char** argv) {
         operator_name = argv[1];
     }
 
-    Compiler compiler("array.h", "/tmp");
+    Compiler compiler(
+        {Headerfile(STR(PROJECT_DIR) "/src/array.h", "array.h")},
+        "/tmp"
+    );
 
     // run functor defined by user at runtime:
     auto func = get_func_with_operator(compiler, operator_name);

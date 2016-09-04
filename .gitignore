@@ -1,6 +1,5 @@
-simple_rtc
-simple_rtc_nvcc
-runtime_compiler
+build/
 .DS_Store
 *.so
 *.o
+src/config.h
